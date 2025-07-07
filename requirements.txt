@@ -1,0 +1,8 @@
+pytchat
+google-auth-oauthlib
+google-auth
+google-api-python-client
+flask
+schedule
+requests
+python-dotenv
