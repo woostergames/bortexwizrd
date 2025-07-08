@@ -17,7 +17,7 @@ load_dotenv()
 # Configuration
 CONFIG_DIR = 'config'
 CREDENTIALS_PATH = os.path.join(CONFIG_DIR, 'credentials.json')
-CHANNEL_ID = 'UC0Jl-TWrUBW7N-cNeACryXw'  # Using channel ID instead of handle
+CHANNEL_ID = 'UC0Jl-TWrUBW7N-cNeACryXw'  # Your channel ID
 MESSAGE = "Block"
 INTERVAL_MINUTES = 10
 
@@ -112,12 +112,13 @@ class YouTubeBot:
             print(f"⚠️ Error checking live status: {str(e)}")
         return False
     
-    def send_message(self):
+    def send_message(self, custom_message=None):
         if not self.chat_id:
             print("❌ No active chat ID")
             return False
             
         try:
+            message_text = custom_message if custom_message else MESSAGE
             self.youtube.liveChatMessages().insert(
                 part="snippet",
                 body={
@@ -125,12 +126,12 @@ class YouTubeBot:
                         "liveChatId": self.chat_id,
                         "type": "textMessageEvent",
                         "textMessageDetails": {
-                            "messageText": MESSAGE
+                            "messageText": message_text
                         }
                     }
                 }
             ).execute()
-            print(f"✉️ Message sent: {MESSAGE}")
+            print(f"✉️ Message sent: {message_text}")
             return True
         except Exception as e:
             print(f"⚠️ Error sending message: {str(e)}")
@@ -189,6 +190,31 @@ def auth():
         return "Authentication successful! Bot is starting..."
     
     return bot.authenticate()
+
+@app.route('/test')
+def test_endpoint():
+    if not bot.credentials:
+        return "Error: Not authenticated. Visit /auth first.", 401
+    
+    try:
+        # For testing, you can either:
+        # 1. Manually set a chat ID (if you have one)
+        # bot.chat_id = "YOUR_TEST_CHAT_ID"
+        
+        # 2. Or trigger a live check
+        bot.is_live = bot.check_live_status()
+        
+        if not bot.chat_id:
+            return "Error: No active chat ID. Stream may be offline.", 400
+            
+        success = bot.send_message(custom_message="Test message from bot")
+        if success:
+            return "✅ Test message sent successfully!"
+        else:
+            return "❌ Failed to send test message", 500
+            
+    except Exception as e:
+        return f"⚠️ Error: {str(e)}", 500
 
 def run_scheduler():
     if bot.credentials:
