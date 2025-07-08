@@ -3,7 +3,7 @@ import time
 import schedule
 import threading
 import requests
-from flask import Flask, request, redirect
+from flask import Flask, request, redirect, make_response
 from google_auth_oauthlib.flow import Flow
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
@@ -61,11 +61,14 @@ class YouTubeBot:
         with open(CREDENTIALS_PATH, 'w') as token:
             token.write(creds.to_json())
     
-    def authenticate(self):        
+    def authenticate(self):
+        """Returns either a redirect or credentials"""
         creds = self.load_credentials()
         if not creds or not creds.valid:
             if creds and creds.expired and creds.refresh_token:
                 creds.refresh(Request())
+                self.save_credentials(creds)
+                return creds
             else:
                 flow = Flow.from_client_config(
                     client_config={
@@ -82,8 +85,6 @@ class YouTubeBot:
                 )
                 auth_url, _ = flow.authorization_url(prompt='consent')
                 return redirect(auth_url)
-            self.save_credentials(creds)
-        self.youtube = build('youtube', 'v3', credentials=creds)
         return creds
     
     def check_live_status(self):
@@ -145,7 +146,6 @@ class YouTubeBot:
                 timeout=10
             )
             
-            # Debug raw response
             if response.status_code != 200:
                 print(f"🚨 API Error {response.status_code}: {response.text[:200]}")
                 return None
@@ -158,7 +158,6 @@ class YouTubeBot:
             ai_message = result['choices'][0]['message']['content'].strip()
             ai_message = ' '.join(ai_message.split())  # Clean whitespace
             
-            # Ensure the response is appropriate for chat
             if len(ai_message) > MAX_RESPONSE_LENGTH:
                 ai_message = ai_message[:MAX_RESPONSE_LENGTH-3] + "..."
                 
@@ -188,7 +187,6 @@ class YouTubeBot:
                     
                 self.last_messages[message_id] = time.time()
                 
-                # Skip bot's own messages and non-commands
                 if (item['authorDetails'].get('isChatOwner', False) or 
                     not item['snippet']['displayMessage'].startswith('!ai ')):
                     continue
@@ -265,24 +263,35 @@ def auth():
         return redirect('/')
     
     if 'code' in request.args:
-        flow = Flow.from_client_config(
-            client_config={
-                "web": {
-                    "client_id": CLIENT_ID,
-                    "client_secret": CLIENT_SECRET,
-                    "redirect_uris": [REDIRECT_URI],
-                    "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-                    "token_uri": "https://oauth2.googleapis.com/token"
-                }
-            },
-            scopes=SCOPES,
-            redirect_uri=REDIRECT_URI
-        )
-        flow.fetch_token(code=request.args['code'])
-        bot.save_credentials(flow.credentials)
-        bot.youtube = build('youtube', 'v3', credentials=flow.credentials)
-        return "Authentication successful! Bot is starting..."
-    return bot.authenticate()
+        try:
+            flow = Flow.from_client_config(
+                client_config={
+                    "web": {
+                        "client_id": CLIENT_ID,
+                        "client_secret": CLIENT_SECRET,
+                        "redirect_uris": [REDIRECT_URI],
+                        "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+                        "token_uri": "https://oauth2.googleapis.com/token"
+                    }
+                },
+                scopes=SCOPES,
+                redirect_uri=REDIRECT_URI
+            )
+            flow.fetch_token(code=request.args['code'])
+            bot.save_credentials(flow.credentials)
+            bot.credentials = flow.credentials
+            bot.youtube = build('youtube', 'v3', credentials=flow.credentials)
+            return "Authentication successful! Bot is starting..."
+        except Exception as e:
+            return f"Authentication failed: {str(e)}", 500
+    
+    # Start new auth flow
+    auth_result = bot.authenticate()
+    if isinstance(auth_result, Credentials):
+        bot.credentials = auth_result
+        bot.youtube = build('youtube', 'v3', credentials=auth_result)
+        return redirect('/')
+    return auth_result  # This will be the redirect
 
 @app.route('/test-ai')
 def test_ai():
@@ -307,4 +316,4 @@ if __name__ == '__main__':
         target=bot.run_scheduled_messages,
         daemon=True
     ).start()
-    app.run(host='0.0.0.0', port=5000)
+    app.run(host='0.0.0.0', port=5000, debug=True)
