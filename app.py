@@ -24,8 +24,6 @@ INTERVAL_MINUTES = 10
 
 # DeepSeek AI Configuration
 DEEPSEEK_API_URL = "https://api.deepseek.com/v1/chat/completions"
-MAX_RESPONSE_LENGTH = 100  # Characters
-POLLING_INTERVAL = 3  # Seconds between chat checks
 
 # Required OAuth scopes
 SCOPES = [
@@ -47,8 +45,7 @@ class YouTubeBot:
         self.chat_id = None
         self.is_live = False
         self.credentials = self.load_credentials()
-        self.last_messages = {}  # Track processed messages
-        self.last_poll_time = 0
+        self.last_messages = {}  # To track recent messages and avoid duplicates
         
     def load_credentials(self):
         if os.path.exists(CREDENTIALS_PATH):
@@ -82,7 +79,7 @@ class YouTubeBot:
                     redirect_uri=REDIRECT_URI
                 )
                 auth_url, _ = flow.authorization_url(prompt='consent')
-                print(f"🔑 Auth URL: {auth_url}")
+                print(f"Auth URL: {auth_url}")
                 return redirect(auth_url)
             
             self.save_credentials(creds)
@@ -102,7 +99,7 @@ class YouTubeBot:
             ).execute()
             
             if not search_response.get('items'):
-                print("🔴 No live streams found")
+                print("No live streams found")
                 return False
                 
             video_id = search_response['items'][0]['id']['videoId']
@@ -112,11 +109,8 @@ class YouTubeBot:
             ).execute()
             
             if video_response.get('items'):
-                new_chat_id = video_response['items'][0]['liveStreamingDetails']['activeLiveChatId']
-                if new_chat_id != self.chat_id:
-                    print(f"🟢 NEW LIVE SESSION! Chat ID: {new_chat_id}")
-                    self.chat_id = new_chat_id
-                    self.last_messages = {}  # Reset message history
+                self.chat_id = video_response['items'][0]['liveStreamingDetails']['activeLiveChatId']
+                print(f"🟢 LIVE! Chat ID: {self.chat_id}")
                 return True
                 
         except Exception as e:
@@ -124,9 +118,8 @@ class YouTubeBot:
         return False
     
     def generate_ai_response(self, prompt):
-        """Generate an AI response using DeepSeek's API"""
+        """Generate an AI response using DeepSeek's free API"""
         try:
-            print(f"🧠 Generating AI response for: {prompt[:50]}...")
             headers = {
                 "Content-Type": "application/json",
             }
@@ -136,100 +129,78 @@ class YouTubeBot:
                 "messages": [
                     {"role": "user", "content": prompt}
                 ],
-                "max_tokens": 80,
+                "max_tokens": 80,  # Keep responses short for chat
                 "temperature": 0.7
             }
             
-            start_time = time.time()
             response = requests.post(DEEPSEEK_API_URL, json=data, headers=headers)
             response.raise_for_status()
             
             result = response.json()
             ai_message = result['choices'][0]['message']['content'].strip()
             
-            # Truncate if needed
-            if len(ai_message) > MAX_RESPONSE_LENGTH:
-                ai_message = ai_message[:MAX_RESPONSE_LENGTH-3] + "..."
+            # Ensure message is under 100 characters
+            if len(ai_message) > 100:
+                ai_message = ai_message[:97] + "..."
                 
-            print(f"🤖 AI Response ({time.time()-start_time:.2f}s): {ai_message}")
             return ai_message
             
-        except requests.exceptions.RequestException as e:
-            print(f"🚨 AI API Error: {str(e)}")
-            return None
         except Exception as e:
-            print(f"⚠️ Unexpected AI Error: {str(e)}")
+            print(f"⚠️ Error generating AI response: {str(e)}")
             return None
     
     def process_chat_messages(self):
         """Check for new messages and process AI commands"""
         if not self.chat_id:
-            print("❌ No active chat ID - skipping message processing")
             return
             
         try:
-            current_time = time.time()
-            if current_time - self.last_poll_time < POLLING_INTERVAL:
-                return
-            self.last_poll_time = current_time
-            
-            print(f"🔍 Polling chat {self.chat_id}...")
+            # Get recent chat messages
             response = self.youtube.liveChatMessages().list(
                 liveChatId=self.chat_id,
                 part="snippet,authorDetails",
-                maxResults=50  # Reduced for faster polling
+                maxResults=200
             ).execute()
             
-            new_messages = 0
-            ai_requests = 0
-            
             for item in response.get('items', []):
-                message_id = item['id']
-                if message_id in self.last_messages:
-                    continue
-                    
-                self.last_messages[message_id] = current_time
-                new_messages += 1
-                
                 message = item['snippet']['displayMessage']
                 author = item['authorDetails']['displayName']
+                message_id = item['id']
                 
-                # Skip if message is from the bot itself
-                if item['authorDetails'].get('isChatOwner', False):
+                # Skip if we've already processed this message
+                if message_id in self.last_messages:
                     continue
                 
-                # Process AI commands
+                self.last_messages[message_id] = time.time()
+                
+                # Check for AI command
                 if message.startswith('!ai ') and len(message) > 4:
-                    ai_requests += 1
                     prompt = message[4:].strip()
-                    print(f"⚡ AI Request from {author}: {prompt[:50]}...")
+                    print(f"🤖 AI request from {author}: {prompt}")
                     
+                    # Generate AI response
                     ai_response = self.generate_ai_response(prompt)
                     if ai_response:
                         response_message = f"!@{author} {ai_response}"
                         self.send_message(custom_message=response_message)
-            
-            if new_messages > 0:
-                print(f"📨 Processed {new_messages} new messages ({ai_requests} AI requests)")
-            
-            # Clean up old message IDs
+                    
+            # Clean up old message IDs to prevent memory issues
+            current_time = time.time()
             self.last_messages = {
-                msg_id: t for msg_id, t in self.last_messages.items()
-                if current_time - t < 300  # 5 minute retention
+                msg_id: timestamp for msg_id, timestamp in self.last_messages.items()
+                if current_time - timestamp < 300  # Keep for 5 minutes
             }
             
         except Exception as e:
-            print(f"⚠️ Chat processing error: {str(e)}")
+            print(f"⚠️ Error processing chat messages: {str(e)}")
     
     def send_message(self, custom_message=None):
         if not self.chat_id:
-            print("❌ No active chat ID - can't send message")
+            print("❌ No active chat ID")
             return False
             
         try:
             message_text = custom_message if custom_message else MESSAGE
-            print(f"✉️ Attempting to send: {message_text}")
-            
             self.youtube.liveChatMessages().insert(
                 part="snippet",
                 body={
@@ -242,12 +213,10 @@ class YouTubeBot:
                     }
                 }
             ).execute()
-            
-            print("✅ Message sent successfully")
+            print(f"✉️ Message sent: {message_text}")
             return True
-            
         except Exception as e:
-            print(f"🚨 Failed to send message: {str(e)}")
+            print(f"⚠️ Error sending message: {str(e)}")
             return False
     
     def run_scheduled_messages(self):
@@ -256,14 +225,14 @@ class YouTubeBot:
         while True:
             self.is_live = self.check_live_status()
             if self.is_live:
-                print(f"🎥 Stream is LIVE! Active chat: {self.chat_id}")
+                print(f"🎥 Stream is LIVE! Starting message schedule...")
                 while self.is_live:
-                    self.process_chat_messages()
+                    self.process_chat_messages()  # Check for AI commands
                     schedule.run_pending()
-                    time.sleep(1)  # Faster loop when live
+                    time.sleep(5)  # Check more frequently for chat messages
                     self.is_live = self.check_live_status()
             else:
-                print(f"🔴 Stream OFFLINE. Next check in 60s...")
+                print(f"🔴 Stream OFFLINE. Checking again in 60s...")
                 time.sleep(60)
 
 bot = YouTubeBot()
@@ -272,12 +241,7 @@ bot = YouTubeBot()
 def home():
     if not bot.credentials:
         return redirect('/auth')
-    return """
-    YouTube Bot is running. Check logs for activity.<br>
-    Endpoints:<br>
-    - <a href="/test">/test</a> - Send test message<br>
-    - <a href="/test-ai">/test-ai</a> - Test AI response
-    """
+    return "YouTube Bot is running. Check logs for activity."
 
 @app.route('/auth')
 def auth():
@@ -316,37 +280,31 @@ def test_endpoint():
         return "Error: Not authenticated. Visit /auth first.", 401
     
     try:
+        # For testing, you can either:
+        # 1. Manually set a chat ID (if you have one)
+        # bot.chat_id = "YOUR_TEST_CHAT_ID"
+        
+        # 2. Or trigger a live check
         bot.is_live = bot.check_live_status()
+        
         if not bot.chat_id:
             return "Error: No active chat ID. Stream may be offline.", 400
             
-        success = bot.send_message(custom_message="!Test message from bot")
-        return "✅ Test message sent!" if success else "❌ Failed to send message", 200
+        success = bot.send_message(custom_message="Test message from bot")
+        if success:
+            return "✅ Test message sent successfully!"
+        else:
+            return "❌ Failed to send test message", 500
             
     except Exception as e:
         return f"⚠️ Error: {str(e)}", 500
 
-@app.route('/test-ai')
-def test_ai():
-    if not bot.credentials:
-        return "Error: Not authenticated. Visit /auth first.", 401
-    
-    test_prompt = "Hello, how are you?"
-    ai_response = bot.generate_ai_response(test_prompt)
-    return f"""
-    <h1>AI Test</h1>
-    <p><strong>Prompt:</strong> {test_prompt}</p>
-    <p><strong>Response:</strong> {ai_response or 'No response generated'}</p>
-    <p><a href="/">Back to home</a></p>
-    """
-
 def run_scheduler():
     if bot.credentials:
-        print("🚀 Starting bot scheduler...")
         bot.run_scheduled_messages()
 
 if __name__ == '__main__':
     scheduler_thread = threading.Thread(target=run_scheduler)
     scheduler_thread.daemon = True
     scheduler_thread.start()
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    app.run(host='0.0.0.0', port=5000)
