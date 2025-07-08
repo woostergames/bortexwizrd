@@ -1,5 +1,4 @@
 import os
-import json
 import time
 import schedule
 import threading
@@ -8,7 +7,6 @@ from google_auth_oauthlib.flow import Flow
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
-from pytchat import LiveChat
 from dotenv import load_dotenv
 
 app = Flask(__name__)
@@ -19,9 +17,15 @@ load_dotenv()
 # Configuration
 CONFIG_DIR = 'config'
 CREDENTIALS_PATH = os.path.join(CONFIG_DIR, 'credentials.json')
-CHANNEL_NAME = '@VortexWizrd'
+CHANNEL_ID = 'UC0Jl-TWrUBW7N-cNeACryXw'  # Using channel ID instead of handle
 MESSAGE = "Block"
 INTERVAL_MINUTES = 10
+
+# Required OAuth scopes
+SCOPES = [
+    'https://www.googleapis.com/auth/youtube.force-ssl',
+    'https://www.googleapis.com/auth/youtube.readonly'
+]
 
 # Environment variables
 CLIENT_ID = os.getenv('GOOGLE_CLIENT_ID')
@@ -47,10 +51,7 @@ class YouTubeBot:
         with open(CREDENTIALS_PATH, 'w') as token:
             token.write(creds.to_json())
     
-    def authenticate(self):
-        SCOPES = ['https://www.googleapis.com/auth/youtube.force-ssl']
-                 ['https://www.googleapis.com/auth/youtube.readonly']
-        
+    def authenticate(self):        
         creds = self.load_credentials()
         
         if not creds or not creds.valid:
@@ -73,7 +74,7 @@ class YouTubeBot:
                     redirect_uri=REDIRECT_URI
                 )
                 auth_url, _ = flow.authorization_url(prompt='consent')
-                print(f"Please go to this URL: {auth_url}")
+                print(f"Auth URL: {auth_url}")
                 return redirect(auth_url)
             
             self.save_credentials(creds)
@@ -83,42 +84,37 @@ class YouTubeBot:
     
     def check_live_status(self):
         try:
+            print(f"🔍 Checking live status for channel: {CHANNEL_ID}")
             search_response = self.youtube.search().list(
-                q=CHANNEL_NAME,
-                type='channel',
-                part='id'
+                channelId=CHANNEL_ID,
+                eventType='live',
+                type='video',
+                part='id',
+                maxResults=1
             ).execute()
             
             if not search_response.get('items'):
-                print(f"Channel {CHANNEL_NAME} not found")
+                print("No live streams found")
                 return False
                 
-            channel_id = search_response['items'][0]['id']['channelId']
-            
-            search_response = self.youtube.search().list(
-                channelId=channel_id,
-                eventType='live',
-                type='video',
-                part='id'
+            video_id = search_response['items'][0]['id']['videoId']
+            video_response = self.youtube.videos().list(
+                id=video_id,
+                part='liveStreamingDetails'
             ).execute()
             
-            if search_response.get('items'):
-                video_id = search_response['items'][0]['id']['videoId']
-                video_response = self.youtube.videos().list(
-                    id=video_id,
-                    part='liveStreamingDetails'
-                ).execute()
+            if video_response.get('items'):
+                self.chat_id = video_response['items'][0]['liveStreamingDetails']['activeLiveChatId']
+                print(f"🟢 LIVE! Chat ID: {self.chat_id}")
+                return True
                 
-                if video_response.get('items'):
-                    self.chat_id = video_response['items'][0]['liveStreamingDetails']['activeLiveChatId']
-                    return True
         except Exception as e:
-            print(f"Error checking live status: {e}")
-        
+            print(f"⚠️ Error checking live status: {str(e)}")
         return False
     
     def send_message(self):
         if not self.chat_id:
+            print("❌ No active chat ID")
             return False
             
         try:
@@ -134,10 +130,10 @@ class YouTubeBot:
                     }
                 }
             ).execute()
-            print(f"Message sent: {MESSAGE}")
+            print(f"✉️ Message sent: {MESSAGE}")
             return True
         except Exception as e:
-            print(f"Error sending message: {e}")
+            print(f"⚠️ Error sending message: {str(e)}")
             return False
     
     def run_scheduled_messages(self):
@@ -146,13 +142,13 @@ class YouTubeBot:
         while True:
             self.is_live = self.check_live_status()
             if self.is_live:
-                print(f"{CHANNEL_NAME} is live! Starting message schedule...")
+                print(f"🎥 Stream is LIVE! Starting message schedule...")
                 while self.is_live:
                     schedule.run_pending()
                     time.sleep(1)
                     self.is_live = self.check_live_status()
             else:
-                print(f"{CHANNEL_NAME} is not live. Checking again in 1 minute...")
+                print(f"🔴 Stream OFFLINE. Checking again in 60s...")
                 time.sleep(60)
 
 bot = YouTubeBot()
@@ -168,7 +164,6 @@ def auth():
     if bot.credentials:
         return redirect('/')
     
-    # Handle OAuth callback
     if 'code' in request.args:
         client_config = {
             "web": {
@@ -182,7 +177,7 @@ def auth():
         
         flow = Flow.from_client_config(
             client_config=client_config,
-            scopes=['https://www.googleapis.com/auth/youtube.force-ssl'],
+            scopes=SCOPES,
             redirect_uri=REDIRECT_URI
         )
         
@@ -191,13 +186,9 @@ def auth():
         bot.save_credentials(creds)
         bot.credentials = creds
         bot.youtube = build('youtube', 'v3', credentials=creds)
-        return "Authentication successful! You can now close this tab."
+        return "Authentication successful! Bot is starting..."
     
     return bot.authenticate()
-
-@app.route('/auth/callback')
-def auth_callback():
-    return redirect('/')
 
 def run_scheduler():
     if bot.credentials:
@@ -207,5 +198,4 @@ if __name__ == '__main__':
     scheduler_thread = threading.Thread(target=run_scheduler)
     scheduler_thread.daemon = True
     scheduler_thread.start()
-    
     app.run(host='0.0.0.0', port=5000)
