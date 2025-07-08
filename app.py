@@ -49,6 +49,7 @@ class YouTubeBot:
     
     def authenticate(self):
         SCOPES = ['https://www.googleapis.com/auth/youtube.force-ssl']
+                 ['https://www.googleapis.com/auth/youtube.readonly']
         
         creds = self.load_credentials()
         
