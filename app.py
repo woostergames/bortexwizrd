@@ -51,6 +51,8 @@ class YouTubeBot:
         self.credentials = self.load_credentials()
         self.last_messages = {}  # Track processed messages
         self.last_poll_time = 0
+        self.last_ai_response_time = 0
+        self.ai_cooldown = 5  # Seconds between AI responses
         
     def load_credentials(self):
         if os.path.exists(CREDENTIALS_PATH):
@@ -128,18 +130,18 @@ class YouTubeBot:
     def generate_ai_response(self, prompt):
         """Generate an AI response using DeepSeek R1 via OpenRouter"""
         try:
-            if not OPENROUTER_API_KEY:
-                print("❌ Missing OpenRouter API Key")
+            current_time = time.time()
+            if current_time - self.last_ai_response_time < self.ai_cooldown:
+                print(f"⏳ AI response on cooldown ({self.ai_cooldown}s)")
                 return None
                 
             print(f"🧠 Generating AI response for: {prompt[:50]}...")
-            
             headers = {
                 "Content-Type": "application/json",
                 "Authorization": f"Bearer {OPENROUTER_API_KEY}",
                 "HTTP-Referer": REDIRECT_URI,
                 "X-Title": "YouTube AI Bot",
-                "X-API-Version": "1.0"
+                "User-Agent": "Mozilla/5.0"
             }
             
             data = {
@@ -151,47 +153,33 @@ class YouTubeBot:
                 "temperature": 0.7
             }
             
-            print("⏳ Sending request to OpenRouter...")
             start_time = time.time()
+            response = requests.post(
+                OPENROUTER_API_URL,
+                json=data,
+                headers=headers,
+                timeout=10
+            )
+            response.raise_for_status()
             
-            try:
-                response = requests.post(
-                    OPENROUTER_API_URL,
-                    json=data,
-                    headers=headers,
-                    timeout=10
-                )
+            result = response.json()
+            ai_message = result['choices'][0]['message']['content'].strip()
+            
+            if len(ai_message) > MAX_RESPONSE_LENGTH:
+                ai_message = ai_message[:MAX_RESPONSE_LENGTH-3] + "..."
                 
-                # Debug logging
-                print(f"🔧 API Status Code: {response.status_code}")
-                print(f"🔧 Response Headers: {response.headers}")
-                
-                response.raise_for_status()
-                result = response.json()
-                
-                # Debug the full response structure
-                print(f"🔧 Full API Response: {result}")
-                
-                if 'choices' not in result or len(result['choices']) == 0:
-                    print("⚠️ No choices in API response")
-                    return None
-                    
-                ai_message = result['choices'][0]['message']['content'].strip()
-                
-                if len(ai_message) > MAX_RESPONSE_LENGTH:
-                    ai_message = ai_message[:MAX_RESPONSE_LENGTH-3] + "..."
-                    
-                print(f"🤖 AI Response ({time.time()-start_time:.2f}s): {ai_message}")
-                return ai_message
-                
-            except requests.exceptions.RequestException as e:
-                print(f"🚨 API Request Failed: {str(e)}")
-                if hasattr(e, 'response') and e.response:
-                    print(f"🔧 Error Response: {e.response.text}")
-                return None
-                
+            print(f"🤖 AI Response ({time.time()-start_time:.2f}s): {ai_message}")
+            self.last_ai_response_time = time.time()
+            return ai_message
+            
+        except requests.exceptions.Timeout:
+            print("⏱️ AI API request timed out")
+            return None
+        except requests.exceptions.RequestException as e:
+            print(f"🚨 AI API Connection Error: {str(e)}")
+            return None
         except Exception as e:
-            print(f"⚠️ Unexpected Error in generate_ai_response: {str(e)}")
+            print(f"⚠️ Unexpected AI Error: {str(e)}")
             return None
     
     def process_chat_messages(self):
@@ -226,20 +214,24 @@ class YouTubeBot:
                 
                 message = item['snippet']['displayMessage']
                 author = item['authorDetails']['displayName']
+                author_id = item['authorDetails']['channelId']
+                
+                print(f"📩 New message from {author}: {message[:50]}...")
                 
                 # Skip if message is from the bot itself
                 if item['authorDetails'].get('isChatOwner', False):
+                    print("⏩ Skipping owner message")
                     continue
                 
                 # Process AI commands
-                if message.startswith('!ai ') and len(message) > 4:
+                if message.lower().startswith('!ai ') and len(message) > 4:
                     ai_requests += 1
                     prompt = message[4:].strip()
                     print(f"⚡ AI Request from {author}: {prompt[:50]}...")
                     
                     ai_response = self.generate_ai_response(prompt)
                     if ai_response:
-                        response_message = f"!@{author} {ai_response}"
+                        response_message = f"@{author} {ai_response}"
                         self.send_message(custom_message=response_message)
             
             if new_messages > 0:
@@ -366,24 +358,10 @@ def test_ai():
     
     test_prompt = "Hello, how are you?"
     ai_response = bot.generate_ai_response(test_prompt)
-    
-    if not ai_response:
-        return """
-        <h1>AI Test Failed</h1>
-        <p><strong>Possible Causes:</strong></p>
-        <ul>
-            <li>Missing or invalid OpenRouter API key</li>
-            <li>Network connectivity issues</li>
-            <li>API rate limits exceeded</li>
-            <li>Check your server logs for details</li>
-        </ul>
-        <p><a href="/">Back to home</a></p>
-        """, 500
-    
     return f"""
     <h1>AI Test</h1>
     <p><strong>Prompt:</strong> {test_prompt}</p>
-    <p><strong>Response:</strong> {ai_response}</p>
+    <p><strong>Response:</strong> {ai_response or 'No response generated'}</p>
     <p><a href="/">Back to home</a></p>
     """
 
