@@ -174,13 +174,13 @@ class YouTubeBot:
             
         except requests.exceptions.Timeout:
             print("⏱️ AI API request timed out")
-            return None
+            return "Error: AI request timed out. Please try again later."
         except requests.exceptions.RequestException as e:
             print(f"🚨 AI API Connection Error: {str(e)}")
-            return None
+            return f"Error: {str(e)}. Please try again later."
         except Exception as e:
             print(f"⚠️ Unexpected AI Error: {str(e)}")
-            return None
+            return "Error: An unexpected error occurred. Please try again later."
     
     def process_chat_messages(self):
         """Check for new messages and process AI commands"""
@@ -223,7 +223,7 @@ class YouTubeBot:
                     print("⏩ Skipping owner message")
                     continue
                 
-                # Process AI commands
+                # Process AI commands (case insensitive)
                 if message.lower().startswith('!ai ') and len(message) > 4:
                     ai_requests += 1
                     prompt = message[4:].strip()
@@ -231,7 +231,12 @@ class YouTubeBot:
                     
                     ai_response = self.generate_ai_response(prompt)
                     if ai_response:
+                        # Always respond, even if it's an error message
                         response_message = f"@{author} {ai_response}"
+                        self.send_message(custom_message=response_message)
+                    else:
+                        # If no response was generated (cooldown, etc.)
+                        response_message = f"@{author} An error occurred while responding. Please try again later."
                         self.send_message(custom_message=response_message)
             
             if new_messages > 0:
