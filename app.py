@@ -128,12 +128,18 @@ class YouTubeBot:
     def generate_ai_response(self, prompt):
         """Generate an AI response using DeepSeek R1 via OpenRouter"""
         try:
+            if not OPENROUTER_API_KEY:
+                print("❌ Missing OpenRouter API Key")
+                return None
+                
             print(f"🧠 Generating AI response for: {prompt[:50]}...")
+            
             headers = {
                 "Content-Type": "application/json",
                 "Authorization": f"Bearer {OPENROUTER_API_KEY}",
                 "HTTP-Referer": REDIRECT_URI,
-                "X-Title": "YouTube AI Bot"
+                "X-Title": "YouTube AI Bot",
+                "X-API-Version": "1.0"
             }
             
             data = {
@@ -145,25 +151,47 @@ class YouTubeBot:
                 "temperature": 0.7
             }
             
+            print("⏳ Sending request to OpenRouter...")
             start_time = time.time()
-            response = requests.post(OPENROUTER_API_URL, json=data, headers=headers)
-            response.raise_for_status()
             
-            result = response.json()
-            ai_message = result['choices'][0]['message']['content'].strip()
-            
-            # Truncate if needed
-            if len(ai_message) > MAX_RESPONSE_LENGTH:
-                ai_message = ai_message[:MAX_RESPONSE_LENGTH-3] + "..."
+            try:
+                response = requests.post(
+                    OPENROUTER_API_URL,
+                    json=data,
+                    headers=headers,
+                    timeout=10
+                )
                 
-            print(f"🤖 AI Response ({time.time()-start_time:.2f}s): {ai_message}")
-            return ai_message
-            
-        except requests.exceptions.RequestException as e:
-            print(f"🚨 AI API Error: {str(e)}")
-            return None
+                # Debug logging
+                print(f"🔧 API Status Code: {response.status_code}")
+                print(f"🔧 Response Headers: {response.headers}")
+                
+                response.raise_for_status()
+                result = response.json()
+                
+                # Debug the full response structure
+                print(f"🔧 Full API Response: {result}")
+                
+                if 'choices' not in result or len(result['choices']) == 0:
+                    print("⚠️ No choices in API response")
+                    return None
+                    
+                ai_message = result['choices'][0]['message']['content'].strip()
+                
+                if len(ai_message) > MAX_RESPONSE_LENGTH:
+                    ai_message = ai_message[:MAX_RESPONSE_LENGTH-3] + "..."
+                    
+                print(f"🤖 AI Response ({time.time()-start_time:.2f}s): {ai_message}")
+                return ai_message
+                
+            except requests.exceptions.RequestException as e:
+                print(f"🚨 API Request Failed: {str(e)}")
+                if hasattr(e, 'response') and e.response:
+                    print(f"🔧 Error Response: {e.response.text}")
+                return None
+                
         except Exception as e:
-            print(f"⚠️ Unexpected AI Error: {str(e)}")
+            print(f"⚠️ Unexpected Error in generate_ai_response: {str(e)}")
             return None
     
     def process_chat_messages(self):
@@ -224,7 +252,7 @@ class YouTubeBot:
             }
             
         except Exception as e:
-            print(f"⚠️ Chat processing errorr: {str(e)}")
+            print(f"⚠️ Chat processing error: {str(e)}")
     
     def send_message(self, custom_message=None):
         if not self.chat_id:
@@ -338,10 +366,24 @@ def test_ai():
     
     test_prompt = "Hello, how are you?"
     ai_response = bot.generate_ai_response(test_prompt)
+    
+    if not ai_response:
+        return """
+        <h1>AI Test Failed</h1>
+        <p><strong>Possible Causes:</strong></p>
+        <ul>
+            <li>Missing or invalid OpenRouter API key</li>
+            <li>Network connectivity issues</li>
+            <li>API rate limits exceeded</li>
+            <li>Check your server logs for details</li>
+        </ul>
+        <p><a href="/">Back to home</a></p>
+        """, 500
+    
     return f"""
     <h1>AI Test</h1>
     <p><strong>Prompt:</strong> {test_prompt}</p>
-    <p><strong>Response:</strong> {ai_response or 'No response generated'}</p>
+    <p><strong>Response:</strong> {ai_response}</p>
     <p><a href="/">Back to home</a></p>
     """
 
