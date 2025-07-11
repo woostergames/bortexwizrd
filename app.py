@@ -224,7 +224,7 @@ class YouTubeBot:
             }
             
         except Exception as e:
-            print(f"⚠️ Chat processing error: {str(e)}")
+            print(f"⚠️ Chat processing errorr: {str(e)}")
     
     def send_message(self, custom_message=None):
         if not self.chat_id:
