@@ -22,8 +22,10 @@ CHANNEL_ID = 'UC0Jl-TWrUBW7N-cNeACryXw'  # Your channel ID
 MESSAGE = "Block"
 INTERVAL_MINUTES = 10
 
-# DeepSeek AI Configuration
-DEEPSEEK_API_URL = "https://api.deepseek.com/v1/chat/completions"
+# OpenRouter AI Configuration
+OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
+OPENROUTER_API_KEY = os.getenv('OPENROUTER_API_KEY')
+AI_MODEL = "deepseek/deepseek-r1"  # Using DeepSeek R1 model
 MAX_RESPONSE_LENGTH = 100  # Characters
 POLLING_INTERVAL = 3  # Seconds between chat checks
 
@@ -124,15 +126,18 @@ class YouTubeBot:
         return False
     
     def generate_ai_response(self, prompt):
-        """Generate an AI response using DeepSeek's API"""
+        """Generate an AI response using DeepSeek R1 via OpenRouter"""
         try:
             print(f"🧠 Generating AI response for: {prompt[:50]}...")
             headers = {
                 "Content-Type": "application/json",
+                "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+                "HTTP-Referer": REDIRECT_URI,
+                "X-Title": "YouTube AI Bot"
             }
             
             data = {
-                "model": "deepseek-chat",
+                "model": AI_MODEL,
                 "messages": [
                     {"role": "user", "content": prompt}
                 ],
@@ -141,7 +146,7 @@ class YouTubeBot:
             }
             
             start_time = time.time()
-            response = requests.post(DEEPSEEK_API_URL, json=data, headers=headers)
+            response = requests.post(OPENROUTER_API_URL, json=data, headers=headers)
             response.raise_for_status()
             
             result = response.json()
@@ -177,7 +182,7 @@ class YouTubeBot:
             response = self.youtube.liveChatMessages().list(
                 liveChatId=self.chat_id,
                 part="snippet,authorDetails",
-                maxResults=50  # Reduced for faster polling
+                maxResults=50
             ).execute()
             
             new_messages = 0
